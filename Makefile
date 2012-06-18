@@ -1,4 +1,4 @@
-CFLAGS := -Wall -Werror -g -ggdb -fvisibility=hidden -std=c99 -I. -ltinfo
+CFLAGS := -Wall -Werror -g -ggdb -fvisibility=hidden -std=c99
 PROGS := fdtrace
 
 all: $(PROGS)

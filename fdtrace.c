@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <stdbool.h>
 
 void usage(const char *name) {
     fprintf(stderr, "Usage: %s PID FD\n", name);
@@ -66,42 +67,79 @@ int main(int argc, char **argv) {
     const char *pidstr = argv[1];
     const char *fdstr  = argv[2];
     const pid_t pid = atoi(pidstr);
-    const int fd  = atoi(fdstr);
+    const int watchfd  = atoi(fdstr);
+    int thisfd;
     //printf("pid = %d\nfd = %d\n", pid, fd);
     long rv = ptrace(PTRACE_ATTACH, pid, NULL, NULL);
     if (0 != rv) {
-        fprintf(stderr, "Could not attach to pid %d\n", pid);
+        perror("Could not attach to process: ");
         return 2;
     }
 
-    //long params[3];
     int insyscall = 0;
     struct user_regs_struct regs;
     int status;
+    unsigned long int buf;
+    int signal = 0;
+
+    waitpid(pid, &status, 0);
+    if(WIFEXITED(status))
+        return 0;
+
+    rv = ptrace(PTRACE_SETOPTIONS, pid, NULL, PTRACE_O_TRACESYSGOOD);
+    if (0 != rv) {
+        perror("Could not set options: ");
+        return 2;
+    }
 
     while(1) {
+        ptrace(PTRACE_SYSCALL, pid,
+                NULL, signal);
+        signal = 0;
+
         waitpid(pid, &status, 0);
         if(WIFEXITED(status))
             break;
-        ptrace(PTRACE_GETREGS, pid,
-                NULL, &regs);
-        if(regs.orig_rax == __NR_write) {
-            if(insyscall == 0) {
-                /* Syscall entry */
-                insyscall = 1;
-                if (fd != regs.rdi)
-                    continue;
-                //printf("Write %lu bytes\n", regs.rdx);
-                dump_data(pid, regs.rsi, regs.rdx);
+
+        bool is_syscall = false;
+        switch (WSTOPSIG(status)) {
+            case SIGTRAP | 0x80:
+                is_syscall = true;
+                break;
+            default:
+                signal = WSTOPSIG(status);
+        }
+
+        if (is_syscall) {
+            rv =ptrace(PTRACE_GETREGS, pid,
+                    NULL, &regs);
+            if (0 != rv) {
+                perror("Could not fetch registers: ");
+                break;
             }
-            else { /* Syscall exit */
-                /* printf("Write returned "
-                        "with %ld\n", regs.rax);*/
+
+            if(insyscall == 0) { /* Syscall entry */
+                insyscall = 1;
+                if (regs.orig_rax == __NR_write) {
+                    if (watchfd != regs.rdi)
+                        continue;
+                    dump_data(pid, regs.rsi, regs.rdx);
+                } else if (regs.orig_rax == __NR_read) {
+                    thisfd = regs.rdi;
+                    buf = regs.rsi;
+                }
+            } else { /* Syscall exit */
                 insyscall = 0;
+                if (regs.orig_rax == __NR_read) {
+                    if (watchfd != thisfd)
+                        continue;
+                    ssize_t bytes_read = regs.rax;
+                    if (bytes_read <= 0)
+                        continue;
+                    dump_data(pid, buf, bytes_read);
+                }
             }
         }
-        ptrace(PTRACE_SYSCALL, pid,
-                NULL, NULL);
     }
     ptrace(PTRACE_DETACH, pid, NULL, NULL);
     return 0;
