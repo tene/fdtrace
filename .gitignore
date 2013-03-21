@@ -1,2 +1,4 @@
 fdtrace
 .*.sw?
+*.so
+*.o
